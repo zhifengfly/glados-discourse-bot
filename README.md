@@ -36,9 +36,10 @@ GLaDOS 自动签到 + NodeLoc 自动阅读 合体 Telegram Bot，运行在 Cloud
 5. **设置环境变量**
    - `ENV_BOT_TOKEN`：Telegram Bot Token（[BotFather](https://t.me/BotFather) 创建）
    - `ENV_ADMIN_ID`：你的 Telegram 用户 ID（[获取](https://t.me/userinfobot)）
-6. **设置 Cron 触发器**
-   - Dashboard → Workers & Pages → 你的 Worker → Triggers
+6. **部署完成后，手动设置 Cron 触发器**
+   - Cloudflare Dashboard → Workers & Pages → 你的 Worker → Triggers
    - 添加 Cron：`0 * * * *`（每小时触发一次）
+   - ⚠️ 部署界面上没有 Cron 选项，必须在 Dashboard 里设置
 
 ## 使用
 
