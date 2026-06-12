@@ -19,9 +19,9 @@ const NL_UAS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0'
 ];
 const NL_TOPICS_PER_RUN = 5;     // 每次 cron 读 5 帖
-const NL_REST_CHANCE = 0.12;     // 读完一批后 12% 休息
-const NL_REST_MIN = 120;         // 最短休息 120 分钟
-const NL_REST_MAX = 360;         // 最长休息 360 分钟
+const NL_REST_CHANCE = 0.15;     // 读完一批后 15% 休息（原油猴 20-40 分钟）
+const NL_REST_MIN = 20;           // 最短休息 20 分钟
+const NL_REST_MAX = 40;           // 最长休息 40 分钟
 
 function nlSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function nlRand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
