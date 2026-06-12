@@ -40,8 +40,8 @@ echo "=== 生成 metadata.json ==="
 cat > /tmp/meta.json << MEOF
 {"main_module": "worker.js", "bindings": [
   {"type": "kv_namespace", "name": "GLADOS_DB", "namespace_id": "${KV_NS}"},
-  {"type": "secret_text", "name": "ENV_ADMIN_ID", "text": "${ADMIN_ID}"},
-  {"type": "secret_text", "name": "ENV_BOT_TOKEN", "text": "${BOT_TOKEN}"}
+  {"type": "secret_text", "name": "ADMIN_ID", "text": "${ADMIN_ID}"},
+  {"type": "secret_text", "name": "BOT_TOKEN", "text": "${BOT_TOKEN}"}
 ]}
 MEOF
 echo "✅ metadata.json 已生成"
