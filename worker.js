@@ -41,13 +41,22 @@ async function nlSaveState(userId, state, env) {
 
 // 刷新话题队列
 async function nlRefreshQueue(baseUrl, cookie) {
-    const r = await fetch(baseUrl + '/latest.json?no_definitions=true', {
-        headers: { 'User-Agent': NL_UAS[nlRand(0,NL_UAS.length-1)], 'Cookie': cookie, 'Accept': 'application/json' }
-    });
-    if (!r.ok) throw new Error('获取话题列表失败');
-    const d = await r.json();
-    const topics = (d.topic_list?.topics || []).filter(t => !t.pinned && t.id);
-    return topics.map(t => ({ id: t.id, title: t.title || '话题#'+t.id }));
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 15000);
+    try {
+        const r = await fetch(baseUrl + '/latest.json?no_definitions=true', {
+            headers: { 'User-Agent': NL_UAS[nlRand(0,NL_UAS.length-1)], 'Cookie': cookie, 'Accept': 'application/json' },
+            signal: controller.signal
+        });
+        clearTimeout(tid);
+        if (!r.ok) return [];
+        const d = await r.json().catch(() => ({}));
+        const topics = (d.topic_list?.topics || []).filter(t => !t.pinned && t.id);
+        return topics.map(t => ({ id: t.id, title: t.title || '话题#'+t.id }));
+    } catch(e) {
+        clearTimeout(tid);
+        return [];
+    }
 }
 
 // 模拟阅读一帖（静默，不抛消息）
@@ -63,7 +72,13 @@ async function nlReadTopic(baseUrl, cookie, topic) {
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
     };
-    const resp = await fetch(baseUrl + '/t/' + topic.id, { headers: hdrs });
+    const loadCtrl = new AbortController();
+    const loadTid = setTimeout(() => loadCtrl.abort(), 15000);
+    let resp;
+    try {
+        resp = await fetch(baseUrl + '/t/' + topic.id, { headers: hdrs, signal: loadCtrl.signal });
+    } catch(e) { clearTimeout(loadTid); return { ok: false, cookieError: '', readTime: 0 }; }
+    clearTimeout(loadTid);
     if (!resp.ok) return { ok: false, cookieError: '', readTime: 0 };
 
     // 检查 Cookie 是否失效
@@ -76,14 +91,22 @@ async function nlReadTopic(baseUrl, cookie, topic) {
     let csrf = (html.match(/csrf-token" content="([^"]+)"/) || [])[1];
     if (!csrf) {
         try {
+            const ctrl = new AbortController();
+            const tid2 = setTimeout(() => ctrl.abort(), 8000);
             const csrfResp = await fetch(baseUrl + '/session/csrf', {
-                headers: { 'User-Agent': ua, 'Cookie': cookie, 'Accept': 'application/json' }
+                headers: { 'User-Agent': ua, 'Cookie': cookie, 'Accept': 'application/json' },
+                signal: ctrl.signal
             });
+            clearTimeout(tid2);
             if (csrfResp.ok) {
                 const csrfData = await csrfResp.json();
                 csrf = csrfData.csrf || '';
             }
         } catch(e) {}
+    }
+    // 如果还是没有 csrf，从 cookie 提取 _t
+    if (!csrf) {
+        csrf = decodeURIComponent((cookie.match(/_t=([^;]+)/) || [,''])[1]);
     }
     const readTime = nlRand(60000, 120000);
     await nlSleep(readTime);
