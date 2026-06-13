@@ -1,15 +1,14 @@
-# GLaDOS 签到 & NL/NS 自动阅读 Bot ☁️
+# GLaDOS 签到 & Discourse 多站自动阅读 Bot ☁️
 
-Telegram Bot，自动签到 GLaDOS，静默阅读 NodeLoc / NodeSeek 攒升级经验。
+Telegram Bot，自动签到 GLaDOS，静默阅读 Discourse 论坛攒升级经验。
 
 ## 功能
 
 - ✅ **GLaDOS 多账号签到** — 支持任意数量的 GLaDOS 类账号
-- ✅ **NodeLoc 自动阅读** — 随机读话题，模拟真人阅读行为
-- ✅ **NodeSeek 自动阅读** — 同 NodeLoc，复用同一套 Discourse 引擎
+- ✅ **Discourse 多站自动阅读** — NodeLoc / NodeSeek / LinuxDO，同一引擎，随时加站
 - ✅ **扩展架构** — 任何 Discourse 论坛只需加一个 `baseUrl` 即可接入
-- ✅ **Telegram 管理** — 绑定/解绑账号，查看统计，实时通知
-- ✅ **定时执行** — Cloudflare Workers Cron 每小时触发一次
+- ✅ **Telegram 管理** — 绑定/解绑账号，查看统计（帖数/时长/Cookie状态），实时通知
+- ✅ **定时执行** — Cloudflare Workers Cron 每小时触发一次，每次读 5 帖
 - ✅ **行为仿真** — 随机阅读时长 + 随机休息，避免风控
 
 ## 部署
@@ -56,29 +55,33 @@ wrangler deploy
 ### GLaDOS 账号
 点「绑定账号」→ 输入 GLaDOS Cookie（直接从浏览器复制）
 
-### NodeLoc 账号
-点「添加账号」→「🌐 NodeLoc 自动阅读」→ 发送你的 NodeLoc Cookie
+### Discourse 论坛（NodeLoc / NodeSeek / LinuxDO）
+点「添加账号」→ 选择对应站点 → **发送 Cookie 即可**（无需名称，格式：`_forum_session=xxx; _t=yyy`）
 
-### NodeSeek 账号
-点「添加账号」→「🔹 NodeSeek 自动阅读」→ 发送你的 NodeSeek Cookie
+所有 Discourse 站点绑定方式完全一样。
 
-## 获取 Cookie（Surge / Loon / QX 模块）
+> 💡 支持给论坛昵称命名：`我的别名:_forum_session=xxx; _t=yyy`
+
+## 获取 Cookie（Surge / Loon / QX / Egern 模块）
 
 **安装链接（点击即可添加）：**
 ```
 https://raw.githubusercontent.com/Linsars/Surge/main/sg/glados.yaml
 ```
 
+> 💡 本模块基于 Surge 语法编写，在 **Egern** 中亦可使用。
+
 **支持的站点：**
 - `glados.network` / `glados.rocks` 等 GLaDOS 变体
 - `www.nodeloc.com`（NodeLoc）
 - `nodeseek.cc`（NodeSeek）
+- `linux.do`（Linux DO）
 
-安装后，访问对应站点的"账号设置"页面，模块会自动捕获 Cookie。
+安装后，访问对应站点的 **头像 → 设置 → 账户** 页面，模块会自动捕获 Cookie。
 
 ### 手动获取 Cookie
 
-在所有支持的 Discourse 站点上，用一样的步骤：
+所有 Discourse 站点步骤相同：
 
 1. 登录网站
 2. 浏览器 F12 → Application → Cookies
@@ -108,24 +111,25 @@ https://raw.githubusercontent.com/Linsars/Surge/main/sg/glados.yaml
 ## 技术架构
 
 ```
-┌─────────────────────────────────────────────────┐
-│               handleScheduled (cron)              │
-│  ┌─────────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ GLaDOS       │  │ Discourse 阅读引擎         │    │
-│  │ 签到引擎     │  │ runDiscourseBatch()        │    │
-│  │              │  │ ├─ NodeLoc (NL_BASE)       │    │
-│  │ getAccount   │  │ └─ NodeSeek (NS_BASE)      │    │
-│  │ DataObj()    │  │   任何 Discourse 站都可用    │    │
-│  └─────────────┘  └──────────┘                    │
-└─────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│               handleScheduled (cron)                │
+│  ┌─────────────┐  ┌──────────────┐                │
+│  │ GLaDOS       │  │ Discourse 阅读引擎             │
+│  │ 签到引擎     │  │ runDiscourseBatch(baseUrl)    │
+│  │              │  │ ├─ NodeLoc  (nodeloc.com)     │
+│  │ getAccount   │  │ ├─ NodeSeek (nodeseek.cc)     │
+│  │ DataObj()    │  │ └─ LinuxDO  (linux.do)        │
+│  └─────────────┘  │   任何 Discourse 站只需加一行    │
+│                    └───────────────────────────────┘
+└────────────────────────────────────────────────────┘
 ```
 
 ### Discourse 阅读引擎
-一次编写，Discourse 论坛通用：
-- `nlRefreshQueue(baseUrl, cookie)` — 拉话题列表
+一次编写，所有 Discourse 论坛通用：
+- `nlRefreshQueue(baseUrl, cookie)` — 拉取最新话题列表
 - `nlReadTopic(baseUrl, cookie, topic)` — 读帖 + 标记已读
-- CSRF 自动检测：先找 HTML `<meta>`，没有则调 API
-- 队列式阅读，每 cron 读 5 帖，12% 概率休息 20-40 分钟
+- CSRF 自动检测：先找 HTML `<meta>`，没有则调 `/session/csrf` API 兜底
+- 队列式阅读，每 cron 读 5 帖，15% 概率休息 20-40 分钟
 
 ## 环境变量 / Secrets
 
