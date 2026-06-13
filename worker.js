@@ -13,6 +13,7 @@ const HEADERS = {
 
 // ================= NodeLoc 自动阅读模块（v3 - 静默版） =================
 const NL_BASE = 'https://www.nodeloc.com';
+const NS_BASE = 'https://nodeseek.cc';
 const NL_UAS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -38,8 +39,8 @@ async function nlSaveState(userId, state, env) {
 }
 
 // 刷新话题队列
-async function nlRefreshQueue(cookie) {
-    const r = await fetch(NL_BASE + '/latest.json?no_definitions=true', {
+async function nlRefreshQueue(baseUrl, cookie) {
+    const r = await fetch(baseUrl + '/latest.json?no_definitions=true', {
         headers: { 'User-Agent': NL_UAS[nlRand(0,NL_UAS.length-1)], 'Cookie': cookie, 'Accept': 'application/json' }
     });
     if (!r.ok) throw new Error('获取话题列表失败');
@@ -49,7 +50,7 @@ async function nlRefreshQueue(cookie) {
 }
 
 // 模拟阅读一帖（静默，不抛消息）
-async function nlReadTopic(cookie, topic) {
+async function nlReadTopic(baseUrl, cookie, topic) {
     await nlSleep(nlRand(5000, 15000));
     const ua = NL_UAS[nlRand(0, NL_UAS.length-1)];
     const hdrs = {
@@ -57,11 +58,11 @@ async function nlReadTopic(cookie, topic) {
         'Cookie': cookie,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': NL_BASE + '/',
+        'Referer': baseUrl + '/',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache'
     };
-    const resp = await fetch(NL_BASE + '/t/' + topic.id, { headers: hdrs });
+    const resp = await fetch(baseUrl + '/t/' + topic.id, { headers: hdrs });
     if (!resp.ok) return { ok: false, cookieError: '', readTime: 0 };
 
     // 检查 Cookie 是否失效
@@ -70,13 +71,25 @@ async function nlReadTopic(cookie, topic) {
     }
 
     const html = await resp.text();
-    const csrf = (html.match(/csrf-token" content="([^"]+)"/) || [])[1];
+    // 优先从 HTML meta 提取 CSRF，部分 Discourse 没有则从 /session/csrf API 获取
+    let csrf = (html.match(/csrf-token" content="([^"]+)"/) || [])[1];
+    if (!csrf) {
+        try {
+            const csrfResp = await fetch(baseUrl + '/session/csrf', {
+                headers: { 'User-Agent': ua, 'Cookie': cookie, 'Accept': 'application/json' }
+            });
+            if (csrfResp.ok) {
+                const csrfData = await csrfResp.json();
+                csrf = csrfData.csrf || '';
+            }
+        } catch(e) {}
+    }
     const readTime = nlRand(60000, 120000);
     await nlSleep(readTime);
 
     if (csrf) {
         try {
-            await fetch(NL_BASE + '/t/' + topic.id + '/timings', {
+            await fetch(baseUrl + '/t/' + topic.id + '/timings', {
                 method: 'POST',
                 headers: {
                     'User-Agent': ua,
@@ -85,14 +98,14 @@ async function nlReadTopic(cookie, topic) {
                     'X-CSRF-Token': csrf,
                     'Accept': 'application/json, text/javascript, */*; q=0.01',
                     'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': NL_BASE + '/t/' + topic.id,
-                    'Origin': NL_BASE
+                    'Referer': baseUrl + '/t/' + topic.id,
+                    'Origin': baseUrl
                 },
                 body: JSON.stringify({ timings: { 1: readTime }, topic_time: readTime })
             });
         } catch(e) {}
     }
-    await fetch(NL_BASE + '/', { headers: { ...hdrs, 'Referer': NL_BASE + '/t/' + topic.id } });
+    await fetch(baseUrl + '/', { headers: { ...hdrs, 'Referer': baseUrl + '/t/' + topic.id } });
     return { ok: true, cookieError: '', readTime };
 }
 
@@ -114,9 +127,26 @@ async function nlGetDailyStats(userId, env) {
     }
 }
 
-// 获取今日 NodeSeek 统计
+// 获取今日 NodeSeek 统计（复用 Discourse 阅读模块，只是不同 state key）
+async function nsGetDailyStats(userId, env) {
+    try {
+        const state = JSON.parse(await env.GLADOS_DB.get('NS_STATE_' + userId) || '{}');
+        const today = new Date().toISOString().slice(0,10);
+        const isToday = state.date === today;
+        return {
+            readsToday: isToday ? state.readsToday : 0,
+            readTotal: state.readTotal || 0,
+            totalReadTime: Math.round((state.totalReadTime || 0) / 60000),
+            restUntil: (state.restUntil || 0) > Date.now() ? state.restUntil : 0,
+            cookieError: state.cookieError || ''
+        };
+    } catch(e) {
+        return { readsToday: 0, readTotal: 0, totalReadTime: 0, restUntil: 0, cookieError: '' };
+    }
+}
+
 // 主入口：每次 cron 触发，静默读多帖
-async function runNodelocBatch(userId, cookie, env) {
+async function runNodelocBatch(userId, cookie, env, baseUrl = NL_BASE) {
     if (!cookie) return;
     try {
         const state = await nlGetState(userId, env);
@@ -139,7 +169,7 @@ async function runNodelocBatch(userId, cookie, env) {
 
             // 确保队列有话题
             if (state.queue.length === 0) {
-                const topics = await nlRefreshQueue(cookie);
+                const topics = await nlRefreshQueue(baseUrl, cookie);
                 if (topics.length === 0) break;
                 // shuffle
                 for (let i = topics.length - 1; i > 0; i--) {
@@ -150,7 +180,7 @@ async function runNodelocBatch(userId, cookie, env) {
             }
 
             const topic = state.queue.shift();
-            const result = await nlReadTopic(cookie, topic);
+            const result = await nlReadTopic(baseUrl, cookie, topic);
             if (!result.ok) {
                 if (result.cookieError) state.cookieError = result.cookieError;
                 break;
@@ -176,166 +206,7 @@ async function runNodelocBatch(userId, cookie, env) {
 }
 // ================= End NodeLoc Module =================
 
-// ================= NodeSeek 自动阅读模块 =================
-const NS_BASE = 'https://nodeseek.cc';
-const NS_UAS = NL_UAS;
-const NS_TOPICS_PER_RUN = 3;
-const NS_REST_CHANCE = 0.12;
-const NS_REST_MIN = 20;
-const NS_REST_MAX = 40;
 
-async function nsSaveState(userId, state, env) {
-    await env.GLADOS_DB.put(`NS_STATE_${userId}`, JSON.stringify(state));
-}
-
-async function nsGetState(userId, env) {
-    try {
-        return JSON.parse(await env.GLADOS_DB.get(`NS_STATE_${userId}`) || '{}');
-    } catch(e) { return {}; }
-}
-
-// 获取今日 NodeSeek 统计
-async function nsGetDailyStats(userId, env) {
-    try {
-        const state = await nsGetState(userId, env);
-        const today = new Date().toISOString().slice(0,10);
-        const isToday = state.date === today;
-        return {
-            readsToday: isToday ? state.readsToday : 0,
-            readTotal: state.readTotal || 0,
-            totalReadTime: Math.round((state.totalReadTime || 0) / 60000),
-            restUntil: (state.restUntil || 0) > Date.now() ? state.restUntil : 0,
-            cookieError: state.cookieError || ''
-        };
-    } catch(e) {
-        return { readsToday: 0, readTotal: 0, totalReadTime: 0, restUntil: 0, cookieError: '' };
-    }
-}
-
-// 刷新话题队列
-async function nsRefreshQueue(cookie) {
-    const r = await fetch(NS_BASE + '/latest.json', {
-        headers: { 'User-Agent': NS_UAS[nlRand(0,NS_UAS.length-1)], 'Cookie': cookie, 'Accept': 'application/json' }
-    });
-    if (!r.ok) throw new Error('ns获取话题列表失败');
-    const d = await r.json();
-    const topics = (d.topic_list?.topics || []).filter(t => !t.pinned && t.id);
-    return topics.map(t => ({ id: t.id, title: t.title || '话题#'+t.id }));
-}
-
-// 模拟阅读一帖（静默，不抛消息）
-async function nsReadTopic(cookie, topic) {
-    await nlSleep(nlRand(5000, 15000));
-    const ua = NS_UAS[nlRand(0, NS_UAS.length-1)];
-    const hdrs = {
-        'User-Agent': ua,
-        'Cookie': cookie,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': NS_BASE + '/',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache'
-    };
-    const resp = await fetch(NS_BASE + '/t/' + topic.id, { headers: hdrs });
-    if (!resp.ok) return { ok: false, cookieError: '', readTime: 0 };
-
-    // 检查 Cookie 是否失效
-    if (resp.headers.get('x-discourse-logged-out') === '1') {
-        return { ok: false, cookieError: 'Cookie 已失效，请重新添加', readTime: 0 };
-    }
-
-    // NodeSeek 没有 csrf meta，从 /session/csrf API 获取
-    let csrf = '';
-    try {
-        const csrfResp = await fetch(NS_BASE + '/session/csrf', {
-            headers: { 'User-Agent': ua, 'Cookie': cookie, 'Accept': 'application/json' }
-        });
-        if (csrfResp.ok) {
-            const csrfData = await csrfResp.json();
-            csrf = csrfData.csrf || '';
-        }
-    } catch(e) {}
-
-    const readTime = nlRand(60000, 120000);
-    await nlSleep(readTime);
-
-    if (csrf) {
-        try {
-            await fetch(NS_BASE + '/t/' + topic.id + '/timings', {
-                method: 'POST',
-                headers: {
-                    'User-Agent': ua,
-                    'Cookie': cookie,
-                    'Content-Type': 'application/json',
-                    'X-CSRF-Token': csrf,
-                    'Accept': 'application/json, text/javascript, */*; q=0.01',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    'Referer': NS_BASE + '/t/' + topic.id,
-                    'Origin': NS_BASE
-                },
-                body: JSON.stringify({
-                    [`timings[${topic.id}]`]: readTime,
-                    topic_time: readTime,
-                    topic_id: topic.id
-                })
-            });
-        } catch(e) {}
-    }
-
-    return { ok: true, cookieError: '', readTime };
-}
-
-// 主入口：每次 cron 触发，静默读多帖
-async function runNodeseekBatch(userId, cookie, env) {
-    const now = Date.now();
-    const state = await nsGetState(userId, env);
-    const today = new Date().toISOString().slice(0,10);
-    if (state.date !== today) { state.readsToday = 0; state.date = today; }
-
-    const rest = parseInt(state.restUntil) || 0;
-    if (rest > now) return;
-
-    // 刷新话题队列
-    if (!state.queue || state.queue.length === 0) {
-        try {
-            const topics = await nsRefreshQueue(cookie);
-            if (topics.length === 0) return;
-            state.queue = topics.sort(() => Math.random() - 0.5);
-        } catch(e) { return; }
-    }
-
-    let readsToday = parseInt(state.readsToday) || 0;
-    let totalReadTime = parseInt(state.totalReadTime) || 0;
-    let readTotal = parseInt(state.readTotal) || 0;
-
-    for (let attempt = 0; attempt < NS_TOPICS_PER_RUN && state.queue.length > 0; attempt++) {
-        if ((parseInt(state.restUntil) || 0) > Date.now()) break;
-
-        const topic = state.queue.shift();
-        const result = await nsReadTopic(cookie, topic);
-        if (!result.ok && result.cookieError) {
-            state.cookieError = result.cookieError;
-            await nsSaveState(userId, state, env);
-            return;
-        }
-
-        readsToday++;
-        readTotal++;
-        totalReadTime += result.readTime || 0;
-        state.readsToday = readsToday;
-        state.readTotal = readTotal;
-        state.totalReadTime = totalReadTime;
-        await nsSaveState(userId, state, env);
-
-        // 随机休息（每 5 帖约 12% 概率休息 20-40 分钟）
-        if (readsToday > 0 && readsToday % 5 === 0 && Math.random() < NS_REST_CHANCE) {
-            state.restUntil = now + nlRand(NS_REST_MIN, NS_REST_MAX) * 60000;
-            await nsSaveState(userId, state, env);
-            return;
-        }
-    }
-}
-// ================= End NodeSeek Module =================
 
 
 
@@ -653,7 +524,12 @@ async function handleCallback(callbackQuery, env, origin) {
         if (acc.domain === 'nodeloc.com') {
             const pref = await getPref(userId, env);
             const st = await env.GLADOS_DB.get('NL_STATE_' + userId, 'json') || { readsToday: 0 };
-            return tgSend(chatId, `🌐 <b>NodeLoc 自动阅读</b>\n\n👤 账号: ${maskEmail(acc.email, pref.showEmail)}\n📊 今日已读: ${st.readsToday} 帖`, env);
+            return tgSend(chatId, `🌐 <b>NodeLoc 自动阅读</b>\n\n👤 账号: ${maskEmail(acc.email, pref.showEmail)}\n📊 今日已读: ${st.readsToday || 0} 帖`, env);
+        }
+        if (acc.domain === 'nodeseek.cc') {
+            const pref = await getPref(userId, env);
+            const st = await env.GLADOS_DB.get('NS_STATE_' + userId, 'json') || { readsToday: 0 };
+            return tgSend(chatId, `🔹 <b>NodeSeek 自动阅读</b>\n\n👤 账号: ${acc.username || 'NodeSeek'}\n📊 今日已读: ${st.readsToday || 0} 帖`, env);
         }
         
         await tgSend(chatId, "⏳ 正在拉取该账号信息...", env);
@@ -671,6 +547,9 @@ async function handleCallback(callbackQuery, env, origin) {
         if (acc.domain === 'nodeloc.com') {
             return tgSend(chatId, "❌ NodeLoc 账号无法单独签到，自动阅读由定时任务执行。", env);
         }
+        if (acc.domain === 'nodeseek.cc') {
+            return tgSend(chatId, "❌ NodeSeek 账号无法单独签到，自动阅读由定时任务执行。", env);
+        }
         await tgSend(chatId, "⏳ 正在为您单独执行签到，请稍候...", env);
         const pref = await getPref(userId, env);
         const accData = await getAccountDataObj(acc, true); // true 代表触发签到
@@ -685,6 +564,7 @@ async function handleCallback(callbackQuery, env, origin) {
         accounts.splice(index, 1);
         await env.GLADOS_DB.put(`USER_${userId}`, JSON.stringify(accounts));
         if (acc.domain === 'nodeloc.com') await env.GLADOS_DB.delete('NL_STATE_' + userId);
+        if (acc.domain === 'nodeseek.cc') await env.GLADOS_DB.delete('NS_STATE_' + userId);
         const pref = await getPref(userId, env);
         await tgEdit(chatId, messageId, `✅ 已成功删除账号：<code>${maskEmail(deletedEmail, pref.showEmail)}</code>`, { inline_keyboard: [[{ text: "🔙 返回账户管理", callback_data: "list_manage" }]] }, env);
     }
@@ -698,6 +578,11 @@ async function handleCallback(callbackQuery, env, origin) {
         await env.GLADOS_DB.put(`STATE_${userId}`, 'AWAITING_NODELOC_COOKIE', { expirationTtl: 300 });
         await env.GLADOS_DB.put(`TEMP_${userId}`, 'nodeloc.com', { expirationTtl: 300 });
         await tgSend(chatId, "🌐 <b>绑定 NodeLoc 账号</b>\n\n直接发送 Cookie 即可，无需加任何前缀或名称。", env);
+    }
+    else if (data === 'add_nodeseek') {
+        await env.GLADOS_DB.put(`STATE_${userId}`, 'AWAITING_NODESEEK_COOKIE', { expirationTtl: 300 });
+        await env.GLADOS_DB.put(`TEMP_${userId}`, 'nodeseek.cc', { expirationTtl: 300 });
+        await tgSend(chatId, "🔹 <b>绑定 NodeSeek 账号</b>\n\n直接发送 Cookie 即可，无需名称。\n\n格式：<code>_forum_session=xxx; _t=yyy</code>\n\n💡 先登录 NodeSeek，浏览器 F12 → Application → Cookies → 复制 <code>_forum_session</code> 和 <code>_t</code> 的值。", env);
     }
     else if (data.startsWith('doexch_')) {
         const parts = data.split('_');
@@ -747,6 +632,33 @@ async function processAddAccountInfo(chatId, userId, text, env) {
         const total = accounts.length;
         const nlTotal = accounts.filter(a => a.domain === 'nodeloc.com').length;
         await tgSend(chatId, `✅ <b>NodeLoc 绑定成功！</b>\n\n👤 账号: <code>${name}</code>\n🌐 NodeLoc 账号: ${nlTotal} 个\n📦 当前总账号数: ${total} 个`, env);
+        return;
+    }
+
+    // NodeSeek: 格式是 名称:cookie（cookie 格式：_forum_session=xxx; _t=yyy）
+    if (state === 'AWAITING_NODESEEK_COOKIE') {
+        let cookie = text.trim();
+        let name = cookie;
+        const colonIdx = cookie.indexOf(':');
+        if (colonIdx > 0 && cookie.indexOf('=') > colonIdx) {
+            name = cookie.substring(0, colonIdx);
+            cookie = cookie.substring(colonIdx + 1);
+        } else {
+            name = 'nodeseek';
+        }
+        // 验证 cookie 是否包含必要字段
+        if (!/_forum_session=/.test(cookie)) {
+            await tgSend(chatId, "❌ Cookie 格式错误！需要包含 <code>_forum_session</code>。\n\n完整格式：<code>名称:_forum_session=xxx; _t=yyy</code>", env);
+            return;
+        }
+        let accounts = await getAccounts(userId, env);
+        accounts = accounts.filter(a => a.domain !== 'nodeseek.cc');
+        accounts.push({ username: name, domain: 'nodeseek.cc', cookie: cookie });
+        await env.GLADOS_DB.put(`USER_${userId}`, JSON.stringify(accounts));
+        await saveUserIdForCron(userId, env);
+        const total = accounts.length;
+        const nsTotal = accounts.filter(a => a.domain === 'nodeseek.cc').length;
+        await tgSend(chatId, `✅ <b>NodeSeek 绑定成功！</b>\n\n👤 账号: <code>${name}</code>\n🔹 NodeSeek 账号: ${nsTotal} 个\n📦 当前总账号数: ${total} 个\n\n⏰ 自动阅读将在下次整点 cron 开始。`, env);
         return;
     }
 
@@ -870,12 +782,29 @@ async function executeTask(task, env, origin) {
                 }
                 continue;
             }
+            if (acc.domain === 'nodeseek.cc') {
+                if (type === 'view_all') {
+                    const s = await nsGetDailyStats(userId, env);
+                    let nsInfo = `├ 🔹 NodeSeek 自动阅读\n├ 📝 今日已读 ${s.readsToday} 帖`;
+                    if (s.totalReadTime > 0) nsInfo += `\n├ ⏱ 累计阅读 ${s.totalReadTime} 分钟`;
+                    if (s.readTotal > 0) nsInfo += `\n├ 📚 累计阅读 ${s.readTotal} 帖`;
+                    if (s.restUntil > 0) {
+                        const mins = Math.ceil((s.restUntil - Date.now()) / 60000);
+                        nsInfo += `\n├ 💤 休息中（剩余 ${mins} 分钟）`;
+                    }
+                    if (s.cookieError) {
+                        nsInfo += `\n├ ❌ ${s.cookieError}`;
+                    }
+                    msgs.push(`〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️\n[${i+1}/${accounts.length}] 👤 ${maskEmail(acc.username || acc.email, pref.showEmail)}\n${nsInfo}`);
+                }
+                continue;
+            }
             const doCheckin = (type === 'checkin');
             const data = await getAccountDataObj(acc, doCheckin);
             msgs.push(formatAccountString(acc, i + 1, accounts.length, pref, data, true, false));
         } 
         else if (type === 'batch_exchange') {
-            if (acc.domain === 'nodeloc.com') continue;
+            if (acc.domain === 'nodeloc.com' || acc.domain === 'nodeseek.cc') continue;
             const ptsRes = await safeFetchJson(`https://${acc.domain}/api/user/points`, { headers: { ...HEADERS, 'cookie': acc.cookie, 'origin': `https://${acc.domain}` }});
             let balanceNum = 0;
             if (ptsRes && ptsRes.code === 0) balanceNum = parseInt(ptsRes.points || 0);
@@ -893,7 +822,7 @@ async function executeTask(task, env, origin) {
             }
         }
         else if (type === 'sub_all') {
-            if (acc.domain === 'nodeloc.com') continue;
+            if (acc.domain === 'nodeloc.com' || acc.domain === 'nodeseek.cc') continue;
             const link = await getSubAndHost(acc.domain, acc.cookie, true);
             if (link && !link.includes('xxxx')) {
                 msgs.push(`<b>${i+1}. ${maskEmail(acc.email, pref.showEmail)}</b>\n<code>${link}</code>\n`);
@@ -993,7 +922,7 @@ async function handleScheduled(env) {
         const nsAcc = accounts.find(a => a.domain === 'nodeseek.cc' && a.cookie);
         if (nsAcc) {
             try {
-                await runNodeseekBatch(userId, nsAcc.cookie, env);
+                await runNodelocBatch(userId, nsAcc.cookie, env, NS_BASE);
             } catch(e) {}
         }
     }
@@ -1202,6 +1131,7 @@ async function showSiteListMenu(chatId, messageId, userId, env) {
     let kb = [];
     allSites.forEach((site, index) => kb.push([{ text: `🌐 ${site}`, callback_data: `selsite_${index}` }]));
     kb.push([{ text: "🌐 NodeLoc 自动阅读", callback_data: "add_nodeloc" }]);
+    kb.push([{ text: "🔹 NodeSeek 自动阅读", callback_data: "add_nodeseek" }]);
     kb.push([{ text: "🔧 自定义网站管理", callback_data: "site_mgr" }]);
     kb.push([{ text: "🔙 返回上级", callback_data: "account_mgr_menu" }]);
     await tgEdit(chatId, messageId, "🌐 <b>选择要添加账号的站点</b>\n\n点击下方站点按钮，或者进入自定义管理：", { inline_keyboard: kb }, env);
