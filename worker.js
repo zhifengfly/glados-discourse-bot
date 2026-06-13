@@ -506,9 +506,11 @@ async function handleCallback(callbackQuery, env, origin) {
         if (!acc) return tgSend(chatId, "❌ 找不到该账号", env);
 
         if (action === 'manage') {
+            const isDiscourse = acc.domain === 'nodeloc.com' || acc.domain === 'nodeseek.cc';
             const kb = {
                 inline_keyboard: [
-                    [{ text: "👁️ 查看此账户信息", callback_data: `view_acc_${index}` }, { text: "✅ 立即单独签到", callback_data: `chk_acc_${index}` }],
+                    [{ text: "👁️ 查看此账户信息", callback_data: `view_acc_${index}` },
+                     { text: isDiscourse ? "📖 立即单独阅读" : "✅ 立即单独签到", callback_data: isDiscourse ? `rd_acc_${index}` : `chk_acc_${index}` }],
                     [{ text: "🔁 更新 Cookies", callback_data: `upd_acc_${index}` }, { text: "❌ 删除此账户", callback_data: `del_acc_${index}` }],
                     [{ text: "🔙 返回账号列表", callback_data: "list_manage" }]
                 ]
@@ -530,13 +532,53 @@ async function handleCallback(callbackQuery, env, origin) {
         
         if (acc.domain === 'nodeloc.com') {
             const pref = await getPref(userId, env);
-            const st = await env.GLADOS_DB.get('NL_STATE_' + userId, 'json') || { readsToday: 0 };
-            return tgSend(chatId, `🌐 <b>NodeLoc 自动阅读</b>\n\n👤 账号: ${maskEmail(acc.email || acc.username || '?', pref.showEmail)}\n📊 今日已读: ${st.readsToday || 0} 帖`, env);
+            const st = await env.GLADOS_DB.get('NL_STATE_' + userId, 'json') || {};
+            const today = new Date().toISOString().slice(0,10);
+            const isToday = st.date === today;
+            let msg = `🌐 <b>NodeLoc 自动阅读</b>\n\n`;
+            msg += `👤 账号: ${maskEmail(acc.email || acc.username || '?', pref.showEmail)}\n`;
+            msg += `━━━━━━━━━━━━━━━━\n`;
+            msg += `📖 今日已读: ${isToday ? (st.readsToday || 0) : 0} 帖\n`;
+            msg += `⏱ 今日阅读: ${isToday ? Math.round((st.totalReadTime || 0) / 60000) : 0} 分钟\n`;
+            msg += `📚 累计已读: ${st.readTotal || 0} 帖\n`;
+            msg += `━━━━━━━━━━━━━━━━\n`;
+            if (st.cookieError) {
+                msg += `⚠️ Cookie 异常: ${st.cookieError}\n`;
+            } else {
+                msg += `✅ Cookie 状态: 正常\n`;
+            }
+            if ((parseInt(st.restUntil) || 0) > Date.now()) {
+                const mins = Math.ceil((parseInt(st.restUntil) - Date.now()) / 60000);
+                msg += `💤 休息中（剩余 ${mins} 分钟）\n`;
+            } else {
+                msg += `⏳ 状态: 等待下次定时运行\n`;
+            }
+            return tgSend(chatId, msg, env);
         }
         if (acc.domain === 'nodeseek.cc') {
             const pref = await getPref(userId, env);
-            const st = await env.GLADOS_DB.get('NS_STATE_' + userId, 'json') || { readsToday: 0 };
-            return tgSend(chatId, `🔹 <b>NodeSeek 自动阅读</b>\n\n👤 账号: ${acc.username || 'NodeSeek'}\n📊 今日已读: ${st.readsToday || 0} 帖`, env);
+            const st = await env.GLADOS_DB.get('NS_STATE_' + userId, 'json') || {};
+            const today = new Date().toISOString().slice(0,10);
+            const isToday = st.date === today;
+            let msg = `🔹 <b>NodeSeek 自动阅读</b>\n\n`;
+            msg += `👤 账号: ${acc.username || '?'}\n`;
+            msg += `━━━━━━━━━━━━━━━━\n`;
+            msg += `📖 今日已读: ${isToday ? (st.readsToday || 0) : 0} 帖\n`;
+            msg += `⏱ 今日阅读: ${isToday ? Math.round((st.totalReadTime || 0) / 60000) : 0} 分钟\n`;
+            msg += `📚 累计已读: ${st.readTotal || 0} 帖\n`;
+            msg += `━━━━━━━━━━━━━━━━\n`;
+            if (st.cookieError) {
+                msg += `⚠️ Cookie 异常: ${st.cookieError}\n`;
+            } else {
+                msg += `✅ Cookie 状态: 正常\n`;
+            }
+            if ((parseInt(st.restUntil) || 0) > Date.now()) {
+                const mins = Math.ceil((parseInt(st.restUntil) - Date.now()) / 60000);
+                msg += `💤 休息中（剩余 ${mins} 分钟）\n`;
+            } else {
+                msg += `⏳ 状态: 等待下次定时运行\n`;
+            }
+            return tgSend(chatId, msg, env);
         }
         
         await tgSend(chatId, "⏳ 正在拉取该账号信息...", env);
@@ -545,17 +587,40 @@ async function handleCallback(callbackQuery, env, origin) {
         const msgStr = formatAccountString(acc, index + 1, accounts.length, pref, accData, true, true);
         await tgSend(chatId, msgStr, env);
     }
-    else if (data.startsWith('chk_acc_')) {
+    else if (data.startsWith('rd_acc_') || data.startsWith('chk_acc_')) {
         const index = parseInt(data.split('_')[2]);
         const accounts = await getAccounts(userId, env);
         const acc = accounts[index];
         if (!acc) return tgSend(chatId, "❌ 账号不存在", env);
         
         if (acc.domain === 'nodeloc.com') {
-            return tgSend(chatId, "❌ NodeLoc 账号无法单独签到，自动阅读由定时任务执行。", env);
+            await tgSend(chatId, "📖 正在执行 NodeLoc 立即阅读...", env);
+            try {
+                // 清除休息状态，强制立即阅读一轮
+                const state = await nlGetState(userId, env);
+                delete state.restUntil;
+                await nlSaveState(userId, state, env);
+                await runNodelocBatch(userId, acc.cookie, env);
+                const st = await nlGetState(userId, env);
+                await tgSend(chatId, `✅ NodeLoc 阅读完成！\n📖 累计已读 ${st.readTotal || 0} 帖（今日 ${st.readsToday || 0} 帖）`, env);
+            } catch(e) {
+                await tgSend(chatId, `❌ 阅读失败: ${e.message || '未知错误'}`, env);
+            }
+            return;
         }
         if (acc.domain === 'nodeseek.cc') {
-            return tgSend(chatId, "❌ NodeSeek 账号无法单独签到，自动阅读由定时任务执行。", env);
+            await tgSend(chatId, "📖 正在执行 NodeSeek 立即阅读...", env);
+            try {
+                const state = JSON.parse(await env.GLADOS_DB.get('NS_STATE_' + userId) || '{}');
+                delete state.restUntil;
+                await env.GLADOS_DB.put('NS_STATE_' + userId, JSON.stringify(state));
+                await runNodelocBatch(userId, acc.cookie, env, 'https://nodeseek.cc');
+                const st = JSON.parse(await env.GLADOS_DB.get('NS_STATE_' + userId) || '{}');
+                await tgSend(chatId, `✅ NodeSeek 阅读完成！\n📖 累计已读 ${st.readTotal || 0} 帖（今日 ${st.readsToday || 0} 帖）`, env);
+            } catch(e) {
+                await tgSend(chatId, `❌ 阅读失败: ${e.message || '未知错误'}`, env);
+            }
+            return;
         }
         await tgSend(chatId, "⏳ 正在为您单独执行签到，请稍候...", env);
         const pref = await getPref(userId, env);
