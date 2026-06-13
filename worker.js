@@ -29,14 +29,14 @@ function nlSleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function nlRand(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
 // 获取/初始化阅读状态
-async function nlGetState(userId, env) {
-    const raw = await env.GLADOS_DB.get(`NL_STATE_${userId}`);
+async function nlGetState(userId, env, prefix = 'NL') {
+    const raw = await env.GLADOS_DB.get(`${prefix}_STATE_${userId}`);
     if (raw) return JSON.parse(raw);
     return { date: '', readsToday: 0, readTotal: 0, totalReadTime: 0, restUntil: 0, lastRead: 0, queue: [], cookieError: '' };
 }
 
-async function nlSaveState(userId, state, env) {
-    await env.GLADOS_DB.put(`NL_STATE_${userId}`, JSON.stringify(state));
+async function nlSaveState(userId, state, env, prefix = 'NL') {
+    await env.GLADOS_DB.put(`${prefix}_STATE_${userId}`, JSON.stringify(state));
 }
 
 // 刷新话题队列
@@ -188,10 +188,10 @@ async function ldGetDailyStats(userId, env) {
 }
 
 // 主入口：每次 cron 触发，静默读多帖
-async function runNodelocBatch(userId, cookie, env, baseUrl = NL_BASE, fast = false) {
+async function runNodelocBatch(userId, cookie, env, baseUrl = NL_BASE, fast = false, statePrefix = 'NL') {
     if (!cookie) return;
     try {
-        const state = await nlGetState(userId, env);
+        const state = await nlGetState(userId, env, statePrefix);
         const now = Date.now();
         const today = new Date().toISOString().slice(0,10);
 
@@ -245,7 +245,7 @@ async function runNodelocBatch(userId, cookie, env, baseUrl = NL_BASE, fast = fa
             }
         }
 
-        if (readCount > 0) await nlSaveState(userId, state, env);
+        if (readCount > 0) await nlSaveState(userId, state, env, statePrefix);
     } catch(e) {
         // 静默失败，不影响签到
     }
@@ -360,6 +360,11 @@ async function handleMessage(message, env, origin) {
     if (text === '/start') {
         await env.GLADOS_DB.delete(`STATE_${userId}`);
         await sendMainMenu(chatId, userId, env);
+        return;
+    }
+    if (text === '/debug_ns' && chatId == env.ADMIN_ID) {
+        await tgSend(chatId, "🔍 开始诊断 NodeSeek，请稍候...", env);
+        await tgSend(chatId, await diagnoseNodeseek(userId, env), env);
         return;
     }
 
@@ -687,7 +692,7 @@ async function handleCallback(callbackQuery, env, origin) {
                 const state = JSON.parse(await env.GLADOS_DB.get('NS_STATE_' + userId) || '{}');
                 delete state.restUntil;
                 await env.GLADOS_DB.put('NS_STATE_' + userId, JSON.stringify(state));
-                await runNodelocBatch(userId, acc.cookie, env, 'https://nodeseek.cc', true);
+                await runNodelocBatch(userId, acc.cookie, env, 'https://nodeseek.cc', true, 'NS');
                 const st = JSON.parse(await env.GLADOS_DB.get('NS_STATE_' + userId) || '{}');
                 const info = [];
                 info.push(`✅ 阅读完成！`);
@@ -708,7 +713,7 @@ async function handleCallback(callbackQuery, env, origin) {
                 const state = JSON.parse(await env.GLADOS_DB.get('LD_STATE_' + userId) || '{}');
                 delete state.restUntil;
                 await env.GLADOS_DB.put('LD_STATE_' + userId, JSON.stringify(state));
-                await runNodelocBatch(userId, acc.cookie, env, 'https://linux.do', true);
+                await runNodelocBatch(userId, acc.cookie, env, 'https://linux.do', true, 'LD');
                 const st = JSON.parse(await env.GLADOS_DB.get('LD_STATE_' + userId) || '{}');
                 await tgSend(chatId, `✅ LinuxDO 阅读完成！\n📖 累计已读 ${st.readTotal || 0} 帖（今日 ${st.readsToday || 0} 帖）`, env);
             } catch(e) {
@@ -808,6 +813,48 @@ async function fetchDiscourseUser(cookie, baseUrl) {
     } catch(e) {}
 
     return null;
+}
+
+// 诊断 NodeSeek 连通性
+async function diagnoseNodeseek(userId, env) {
+    const accounts = await getAccounts(userId, env);
+    const nsAcc = accounts.find(a => a.domain === 'nodeseek.cc');
+    if (!nsAcc) return '没有 NodeSeek 账号';
+    const rows = ['🔍 NodeSeek 诊断结果', '━━━━━━━━━━━'];
+    async function t(label, url, extra) {
+        try {
+            const r = await Promise.race([
+                fetch(url, extra || {}),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 12000))
+            ]);
+            rows.push(`✅ ${label} status=${r.status}`);
+            return r;
+        } catch(e) {
+            rows.push(`❌ ${label} ${e.message?.includes('TIMEOUT') ? '超时' : e.name}`);
+            return null;
+        }
+    }
+    const r1 = await t('/latest.json', 'https://nodeseek.cc/latest.json?no_definitions=true', {
+        headers: { 'User-Agent': HEADERS['User-Agent'], 'Cookie': nsAcc.cookie, 'Accept': 'application/json' }
+    });
+    if (r1) {
+        try { const d = await r1.json(); rows.push(`   topics=${d.topic_list?.topics?.length || 0}`); } catch(e) { rows.push(`   json parse ❌`); }
+    }
+    const r2 = await t('/t/5', 'https://nodeseek.cc/t/5', {
+        headers: { 'User-Agent': HEADERS['User-Agent'], 'Cookie': nsAcc.cookie }
+    });
+    if (r2) {
+        rows.push(`   logged_out=${r2.headers.get('x-discourse-logged-out')}`);
+        const h = await r2.text();
+        rows.push(`   csrf=${!!h.match(/csrf-token" content="([^"]+)"/)} len=${h.length}`);
+    }
+    const r3 = await t('/session/current.json', 'https://nodeseek.cc/session/current.json', {
+        headers: { 'User-Agent': HEADERS['User-Agent'], 'Cookie': nsAcc.cookie, 'Accept': 'application/json' }
+    });
+    if (r3) {
+        try { const j = await r3.json(); rows.push(`   user=${j?.current_user?.username || 'null'}`); } catch(e) { rows.push(`   json parse ❌`); }
+    }
+    return rows.join('\n');
 }
 
 // ================= 输入消息逻辑处理 =================
@@ -1225,14 +1272,14 @@ async function handleScheduled(env) {
         const nsAcc = accounts.find(a => a.domain === 'nodeseek.cc' && a.cookie);
         if (nsAcc) {
             try {
-                await runNodelocBatch(userId, nsAcc.cookie, env, NS_BASE);
+                await runNodelocBatch(userId, nsAcc.cookie, env, NS_BASE, false, 'NS');
             } catch(e) {}
         }
         // LinuxDO 静默阅读（每次 cron 触发都跑，独立于签到）
         const ldAcc = accounts.find(a => a.domain === 'linux.do' && a.cookie);
         if (ldAcc) {
             try {
-                await runNodelocBatch(userId, ldAcc.cookie, env, LD_BASE);
+                await runNodelocBatch(userId, ldAcc.cookie, env, LD_BASE, false, 'LD');
             } catch(e) {}
         }
     }
