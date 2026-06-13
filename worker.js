@@ -709,17 +709,17 @@ async function handleCallback(callbackQuery, env, origin) {
     else if (data === 'add_nodeloc') {
         await env.GLADOS_DB.put(`STATE_${userId}`, 'AWAITING_NODELOC_COOKIE', { expirationTtl: 300 });
         await env.GLADOS_DB.put(`TEMP_${userId}`, 'nodeloc.com', { expirationTtl: 300 });
-        await tgSend(chatId, "🌐 <b>绑定 NodeLoc 账号</b>\n\n直接发送 Cookie 即可，无需加任何前缀或名称。", env);
+        await tgSend(chatId, "🌐 <b>绑定 NodeLoc 账号</b>\n\n发送格式：<code>名称:cookie</code>\n\n示例：<code>主号:_forum_session=xxx; _t=yyy</code>\n\n📌 名称 可以是任意标识（用户名/备注），用于区分多账号。", env);
     }
     else if (data === 'add_nodeseek') {
         await env.GLADOS_DB.put(`STATE_${userId}`, 'AWAITING_NODESEEK_COOKIE', { expirationTtl: 300 });
         await env.GLADOS_DB.put(`TEMP_${userId}`, 'nodeseek.cc', { expirationTtl: 300 });
-        await tgSend(chatId, "🔹 <b>绑定 NodeSeek 账号</b>\n\n直接发送 Cookie 即可，无需名称。\n\n格式：<code>_forum_session=xxx; _t=yyy</code>\n\n💡 先登录 NodeSeek，浏览器 F12 → Application → Cookies → 复制 <code>_forum_session</code> 和 <code>_t</code> 的值。", env);
+        await tgSend(chatId, "🔹 <b>绑定 NodeSeek 账号</b>\n\n发送格式：<code>名称:_forum_session=xxx; _t=yyy</code>\n\n📌 名称 可以是任意标识（用户名/备注），用于区分多账号。\n\n💡 先登录 NodeSeek，浏览器 F12 → Application → Cookies → 复制 <code>_forum_session</code> 和 <code>_t</code> 的值。", env);
     }
     else if (data === 'add_linuxdo') {
         await env.GLADOS_DB.put(`STATE_${userId}`, 'AWAITING_LINUXDO_COOKIE', { expirationTtl: 300 });
         await env.GLADOS_DB.put(`TEMP_${userId}`, 'linux.do', { expirationTtl: 300 });
-        await tgSend(chatId, "🐧 <b>绑定 Linux DO 账号</b>\n\n直接发送 Cookie 即可，无需名称。\n\n格式：<code>_forum_session=xxx; _t=yyy</code>\n\n💡 先登录 linux.do，浏览器 F12 → Application → Cookies → 复制 <code>_forum_session</code> 和 <code>_t</code> 的值。", env);
+        await tgSend(chatId, "🐧 <b>绑定 Linux DO 账号</b>\n\n发送格式：<code>名称:_forum_session=xxx; _t=yyy</code>\n\n📌 名称 可以是任意标识（用户名/备注），用于区分多账号。\n\n💡 先登录 linux.do，浏览器 F12 → Application → Cookies → 复制 <code>_forum_session</code> 和 <code>_t</code> 的值。", env);
     }
     else if (data.startsWith('doexch_')) {
         const parts = data.split('_');
@@ -770,7 +770,7 @@ async function processAddAccountInfo(chatId, userId, text, env) {
         await saveUserIdForCron(userId, env);
         const total = accounts.length;
         const nlTotal = accounts.filter(a => a.domain === 'nodeloc.com').length;
-        await tgSend(chatId, `✅ <b>NodeLoc 绑定成功！</b>\n\n👤 账号: <code>${name}</code>\n🌐 NodeLoc 账号: ${nlTotal} 个\n📦 当前总账号数: ${total} 个\n\n💡 提示：如需为账号命名，请使用 <code>名称:cookie</code> 格式重新绑定。`, env);
+        await tgSend(chatId, `✅ <b>NodeLoc 绑定成功！</b>\n\n👤 账号: <code>${name}</code>\n🌐 NodeLoc 账号: ${nlTotal} 个\n📦 当前总账号数: ${total} 个\n\n💡 如需给账号取名，重新绑定用 <code>名称:cookie</code> 格式即可。`, env);
         return;
     }
 
