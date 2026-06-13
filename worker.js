@@ -742,20 +742,37 @@ async function handleCallback(callbackQuery, env, origin) {
     }
 }
 
-// 通过 Discourse API 获取当前登录用户的用户名和邮箱
+// 通过 Discourse API / HTML 获取当前登录用户的用户名和邮箱
 async function fetchDiscourseUser(cookie, baseUrl) {
+    // Method 1: API
     try {
         const res = await fetch(baseUrl + '/session/current.json', {
             headers: { 'User-Agent': HEADERS['User-Agent'], 'Cookie': cookie }
         });
-        if (!res.ok) return null;
-        const data = await res.json();
-        const user = data && data.current_user;
-        if (user && user.username) return { username: user.username, email: user.email || '' };
-        return null;
-    } catch(e) {
-        return null;
-    }
+        if (res.ok) {
+            const data = await res.json();
+            const user = data && data.current_user;
+            if (user && user.username) return { username: user.username, email: user.email || '' };
+        }
+    } catch(e) {}
+
+    // Method 2: 从首页 HTML 解析 discourse-current-user
+    try {
+        const res = await fetch(baseUrl + '/', {
+            headers: { 'User-Agent': HEADERS['User-Agent'], 'Cookie': cookie, 'Accept': 'text/html' }
+        });
+        if (res.ok) {
+            const html = await res.text();
+            const m = html.match(/<meta name="discourse-current-user" content="([^"]+)">/);
+            if (m) {
+                const raw = m[1].replace(/&quot;/g, '"');
+                const data = JSON.parse(decodeURIComponent(raw));
+                if (data && data.username) return { username: data.username, email: data.email || '' };
+            }
+        }
+    } catch(e) {}
+
+    return null;
 }
 
 // ================= 输入消息逻辑处理 =================
@@ -775,6 +792,11 @@ async function processAddAccountInfo(chatId, userId, text, env) {
         const userInfo = await fetchDiscourseUser(cookie, NL_BASE);
         if (!userInfo) return tgSend(chatId, "❌ 无法验证 Cookie，请确认已登录 NodeLoc 后重新抓取。", env);
         let accounts = await getAccounts(userId, env);
+        // 去重：同一 _forum_session 不重复绑定
+        const sessionMatch = cookie.match(/_forum_session=([^;]+)/);
+        const sessionVal = sessionMatch ? sessionMatch[1] : null;
+        const exists = accounts.some(a => a.domain === 'nodeloc.com' && a.cookie && a.cookie.includes(sessionVal));
+        if (exists) return tgSend(chatId, `ℹ️ 该账号已绑定（<code>${userInfo.email || userInfo.username}</code>），无需重复操作。`, env);
         accounts.push({ email: userInfo.email, username: userInfo.username, domain: 'nodeloc.com', cookie: cookie });
         await env.GLADOS_DB.put(`USER_${userId}`, JSON.stringify(accounts));
         await saveUserIdForCron(userId, env);
@@ -793,6 +815,10 @@ async function processAddAccountInfo(chatId, userId, text, env) {
         const userInfo = await fetchDiscourseUser(cookie, NS_BASE);
         if (!userInfo) return tgSend(chatId, "❌ 无法验证 Cookie，请确认已登录 NodeSeek 后重新抓取。", env);
         let accounts = await getAccounts(userId, env);
+        const sessionMatch = cookie.match(/_forum_session=([^;]+)/);
+        const sessionVal = sessionMatch ? sessionMatch[1] : null;
+        const exists = accounts.some(a => a.domain === 'nodeseek.cc' && a.cookie && a.cookie.includes(sessionVal));
+        if (exists) return tgSend(chatId, `ℹ️ 该账号已绑定（<code>${userInfo.email || userInfo.username}</code>），无需重复操作。`, env);
         accounts.push({ email: userInfo.email, username: userInfo.username, domain: 'nodeseek.cc', cookie: cookie });
         await env.GLADOS_DB.put(`USER_${userId}`, JSON.stringify(accounts));
         await saveUserIdForCron(userId, env);
@@ -802,21 +828,37 @@ async function processAddAccountInfo(chatId, userId, text, env) {
         return;
     }
 
-    // LinuxDO: 直接发 cookie，bot 自动提取用户名
+    // LinuxDO: 直接发 cookie，bot 自动提取用户名（提取失败也继续绑定）
     if (state === 'AWAITING_LINUXDO_COOKIE') {
         let cookie = text.trim();
         if (!/_forum_session=/.test(cookie)) {
             return tgSend(chatId, "❌ Cookie 格式错误！需要包含 <code>_forum_session</code>。", env);
         }
         const userInfo = await fetchDiscourseUser(cookie, LD_BASE);
-        if (!userInfo) return tgSend(chatId, "❌ 无法验证 Cookie，请确认已登录 LinuxDO 后重新抓取。", env);
+        let displayName, email, username;
+        if (userInfo) {
+            email = userInfo.email;
+            username = userInfo.username;
+            displayName = email || username;
+        } else {
+            // CF 防护下无法验证，用 cookie 哈希当标识
+            const m = cookie.match(/_forum_session=([^;]+)/);
+            displayName = 'linuxdo' + (m ? '-' + m[1].substring(0, 6) : '');
+            email = displayName + '@linux.do';
+            username = displayName;
+        }
         let accounts = await getAccounts(userId, env);
-        accounts.push({ email: userInfo.email, username: userInfo.username, domain: 'linux.do', cookie: cookie });
+        // 去重：同一 _forum_session 不重复绑定
+        const sessionMatch = cookie.match(/_forum_session=([^;]+)/);
+        const sessionVal = sessionMatch ? sessionMatch[1] : null;
+        const exists = accounts.some(a => a.domain === 'linux.do' && a.cookie && sessionVal && a.cookie.includes(sessionVal));
+        if (exists) return tgSend(chatId, `ℹ️ 该账号已绑定${userInfo ? '（' + displayName + '）' : ''}，无需重复操作。`, env);
+        accounts.push({ email, username, domain: 'linux.do', cookie });
         await env.GLADOS_DB.put(`USER_${userId}`, JSON.stringify(accounts));
         await saveUserIdForCron(userId, env);
         const total = accounts.length;
         const ldTotal = accounts.filter(a => a.domain === 'linux.do').length;
-        await tgSend(chatId, `✅ <b>LinuxDO 绑定成功！</b>\n\n👤 账号: <code>${userInfo.email || userInfo.username}</code>\n🐧 LinuxDO 账号: ${ldTotal} 个\n📦 当前总账号数: ${total} 个\n\n⏰ 自动阅读将在下次整点 cron 开始。`, env);
+        await tgSend(chatId, `✅ <b>LinuxDO 绑定成功！</b>\n\n👤 账号: <code>${displayName}</code>\n🐧 LinuxDO 账号: ${ldTotal} 个\n📦 当前总账号数: ${total} 个${userInfo ? '' : '\n\n⚠️ 因 CF 防护未能验证 Cookie，已直接绑定。若阅读报错请重新抓取最新 Cookie。'}\n\n⏰ 自动阅读将在下次整点 cron 开始。`, env);
         return;
     }
 
