@@ -1406,31 +1406,7 @@ async function handleScheduled(env) {
                 }).catch(function(){});
             }
             const gladosCount = accounts.filter(a => a.domain !== 'nodeloc.com' && a.domain !== 'nodeseek.cc' && a.domain !== 'linux.do').length;
-            const nlStats = await nlGetDailyStats(userId, env);
-            const nsStats = await nsGetDailyStats(userId, env);
-            let extraLine = '';
-            if (nlStats.readsToday > 0) {
-                extraLine += `\n🌐 NodeLoc 今日已阅读 ${nlStats.readsToday} 帖`;
-                if (nlStats.totalReadTime > 0) extraLine += `（${nlStats.totalReadTime} 分钟）`;
-            }
-            if (nlStats.cookieError) {
-                extraLine += `\n⚠️ NodeLoc: ${nlStats.cookieError}`;
-            }
-            if (nsStats.readsToday > 0) {
-                extraLine += `\n🔹 NodeSeek 今日已阅读 ${nsStats.readsToday} 帖`;
-                if (nsStats.totalReadTime > 0) extraLine += `（${nsStats.totalReadTime} 分钟）`;
-            }
-            if (nsStats.cookieError) {
-                extraLine += `\n⚠️ NodeSeek: ${nsStats.cookieError}`;
-            }
-            const ldStats = await ldGetDailyStats(userId, env);
-            if (ldStats.readsToday > 0) {
-                extraLine += `\n🐧 LinuxDO 今日已阅读 ${ldStats.readsToday} 帖`;
-                if (ldStats.totalReadTime > 0) extraLine += `（${ldStats.totalReadTime} 分钟）`;
-            }
-            if (ldStats.cookieError) {
-                extraLine += `\n⚠️ LinuxDO: ${ldStats.cookieError}`;
-            }
+            let extraLine = '\n\n' + (await getHealthSummary(userId, env)).replace(/\| 已读 \d+ 帖/g, '');
             await tgSend(userId, `⏰ <b>定时签到自动完成</b>\n已在后台成功向 ${gladosCount} 个账号发送了签到指令。${extraLine}`, env);
         }
         // 三个论坛并行阅读，共享 15 分钟时间窗口
